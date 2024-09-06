@@ -1,7 +1,18 @@
 #!/bin/bash
-set -e #to exit immediately if any command exits with a non-0 status
+set -e
+cat << EOF
 
-#function to prompt user for input with a default value
+  _________      .__                                      _________.__            __    __  .__          
+ /   _____/ ____ |  |__   ____   _____ _____             /   _____/|  |__  __ ___/  |__/  |_|  |   ____  
+ \_____  \_/ ___\|  |  \_/ __ \ /     \\__  \    ______  \_____  \ |  |  \|  |  \   __\   __\  | _/ __ \ 
+ /        \  \___|   Y  \  ___/|  Y Y  \/ __ \_ /_____/  /        \|   Y  \  |  /|  |  |  | |  |_\  ___/ 
+/_______  /\___  >___|  /\___  >__|_|  (____  /         /_______  /|___|  /____/ |__|  |__| |____/\___  >
+        \/     \/     \/     \/      \/     \/                  \/      \/                            \/ 
+
+EOF
+sleep 3
+
+# prompt user for input with default values
 prompt_with_default() {
     local prompt="$1"
     local default="$2"
@@ -11,7 +22,7 @@ prompt_with_default() {
     echo "${response:-$default}"
 }
 
-#function for yes/no confirmation
+#user input for confirmation
 confirm() {
     local prompt="$1"
     local response
