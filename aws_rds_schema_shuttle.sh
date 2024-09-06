@@ -12,63 +12,106 @@ cat << EOF
 EOF
 sleep 3
 
-# prompt user for input with default values
-prompt_with_default() {
+#!prompt user for input with default values
+get_user_input() {
     local prompt="$1"
-    local default="$2"
-    local response
+    local variable_name="$2"
+    local default_value="$3"
 
-    read -p "$prompt [$default]: " response
-    echo "${response:-$default}"
+    read -p "$prompt [$default_value]: " user_input
+   
+    eval "$variable_name=\"${user_input:-$default_value}\""
 }
-
-#user input for confirmation
-confirm() {
-    local prompt="$1"
-    local response
-
-    while true; do
-        read -p "$prompt (y/n): " response
-        case $response in
-        [Yy]*) return 0 ;;
-        [Nn]*) return 1 ;;
-        *) echo "Please answer yes or no." ;;
-        esac
-    done
-}
-
-# Function to set directory permissions
-set_directory_permissions() {
+#!check directory
+check_directory() {
     local dir="$1"
-    local user="$2"
-    sudo chown -R "$user:$user" "$dir"
-    sudo chmod 755 "$dir"
-    sudo find "$dir" -type f -exec chmod 644 {} \;
+    mkdir -p "$dir" || {
+        echo "\nFailed to create directory: $dir. Please check permissions.\n"
+        exit 1
+    }
+    chmod 755 "$dir"
+    if [ ! -w "$dir" ]; then
+        echo
+        echo "Directory is not writable: $dir. Please check permissions."
+        echo
+        exit 1
+    fi
 }
 
-# Prompt for source RDS details
-echo "Enter source RDS details:"
-SRC_DB_HOST=$(prompt_with_default "Enter source DB host" "localhost")
-SRC_DB_USER=$(prompt_with_default "Enter source DB user" "root")
-SRC_DB_PASSWORD=$(prompt_with_default "Enter source DB password" "")
-SRC_DB_NAME=$(prompt_with_default "Enter source DB name" "mydb")
-SRC_DB_PORT=$(prompt_with_default "Enter source DB port" "3306")
+#!check and report mydumper errors
+check_mydumper_error() {
+    local exit_code=$1
+    local log_file=$2
 
-# Prompt for backup directory and log file
-BACKUP_DIR=$(prompt_with_default "Enter backup directory" "./Backup/Dumper")
-LOG_FILE=$(prompt_with_default "Enter log file path" "/tmp/rds_backup_restore.log")
+    if [ $exit_code -ne 0 ]; then
+        echo "Backup failed with exit code $exit_code. Analyzing error..."
 
-# Create backup directory if it doesn't exist
-mkdir -p "$BACKUP_DIR"
+        # Check for common error patterns
+        if grep -q "Access denied" "$log_file"; then
+            echo "Error: Access denied. Please check your database credentials and permissions."
+        elif grep -q "Can't connect to MySQL server" "$log_file"; then
+            echo "Error: Unable to connect to MySQL server. Please check if the server is running and the host/port are correct."
+        elif grep -q "Unknown database" "$log_file"; then
+            echo "Error: Unknown database. Please check if the database name is correct."
+        elif grep -q "Couldn't execute 'FLUSH TABLES WITH READ LOCK'" "$log_file"; then
+            echo "Error: Unable to acquire necessary locks. The user may lack RELOAD privilege or there might be long-running queries blocking the lock."
+        else
+            echo "Unknown error occurred. Please check the log file for more details."
+        fi
 
-# Backup process
-echo "Starting backup process..."
-if ! mydumper \
-    --host="$SRC_DB_HOST" \
-    --user="$SRC_DB_USER" \
-    --password="$SRC_DB_PASSWORD" \
-    --port="$SRC_DB_PORT" \
-    --database="$SRC_DB_NAME" \
+        echo "Last 10 lines of the log file:"
+        tail -n 10 "$log_file"
+
+        exit 1
+    fi
+}
+
+#!Prints credentials to user
+print_credentials() {
+    local host="$1"
+    local user="$2"
+    local db="$3"
+    local port="$4"
+
+    echo -e "\n==== Database Credentials ===="
+    echo "Host: $host"
+    echo "User: $user"
+    echo "Database: $db"
+    echo "Port: $port"
+    echo "==============================="
+}
+
+#!Prompt user for source DB input
+echo -e "\n=== Source Database Details ==="
+get_user_input "Enter DB host" DB_HOST "localhost"
+get_user_input "Enter DB user" DB_USER "root"
+get_user_input "Enter DB password" DB_PASSWORD ""
+get_user_input "Enter DB name" DB_NAME "mysql"
+get_user_input "Enter DB port" DB_PORT "3306"
+get_user_input "Enter myloader user" MYLOADER_USER "ubuntu"
+
+
+#!Print source credentials
+print_credentials "$DB_HOST" "$DB_USER" "$DB_NAME" "$DB_PORT"
+
+#!Backup directory details
+BACKUP_DIR="./Backup/Dumper_${DB_NAME}_$(date +%Y%m%d_%H%M%S)"
+LOG_FILE="./Backup/DumperLogs/mydumper_$(date +%Y%m%d_%H%M%S).log"
+
+echo -e "\nBackup will be stored in: $BACKUP_DIR"
+
+#!Verify backup and log directories
+check_directory "$BACKUP_DIR"
+check_directory "$(dirname "$LOG_FILE")"
+
+sleep 2
+echo -e "\nStarting backup process..."
+mydumper \
+    --host="$DB_HOST" \
+    --user="$DB_USER" \
+    --password="$DB_PASSWORD" \
+    --port="$DB_PORT" \
+    --database="$DB_NAME" \
     --outputdir="$BACKUP_DIR" \
     --rows=500000 \
     --triggers \
@@ -78,15 +121,20 @@ if ! mydumper \
     --threads=16 \
     --compress-protocol \
     --verbose=3 \
-    2>&1 | tee -a "$LOG_FILE"; then
-    echo "Backup failed. Check the log file at $LOG_FILE for details."
-    exit 1
-fi
+    --no-locks \
+    2>&1 | tee -a "$LOG_FILE"
 
-echo "Backup completed successfully. Backup files are located in $BACKUP_DIR."
+#!Catci for mydumper errors
+check_mydumper_error $? "$LOG_FILE"
 
-# Verify backup files
-if ! ls "$BACKUP_DIR"/*.sql.gz >/dev/null 2>&1; then
-    echo "No .sql.gz files found in backup directory. Backup may have failed."
-    exit 1
-fi
+# Change ownership of the backup directory and its contents
+echo -e "\nFixing permissions and ownership for backup files and directory...\n"
+sudo chown -R "$MYLOADER_USER:$MYLOADER_USER" "$BACKUP_DIR"
+chmod 755 "$BACKUP_DIR"
+find "$BACKUP_DIR" -type f -exec chmod 644 {} \;
+echo -e "\nPermissions and ownership updated on $BACKUP_DIR\n"
+echo "Directory permissions:"
+ls -ld "$BACKUP_DIR"
+echo -e "Backup completed successfully. Backup files are located in $BACKUP_DIR."
+echo
+
