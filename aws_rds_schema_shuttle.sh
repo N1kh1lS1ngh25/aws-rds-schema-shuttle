@@ -1,13 +1,31 @@
 #!/bin/bash
 set -e
-cat << EOF
+#!Colors
+RED=$(tput setaf 1)
+GREEN=$(tput setaf 2)
+YELLOW=$(tput setaf 3)
+BLUE=$(tput setaf 4)
+RESET=$(tput sgr0)
 
-  _________      .__                                      _________.__            __    __  .__          
- /   _____/ ____ |  |__   ____   _____ _____             /   _____/|  |__  __ ___/  |__/  |_|  |   ____  
- \_____  \_/ ___\|  |  \_/ __ \ /     \\__  \    ______  \_____  \ |  |  \|  |  \   __\   __\  | _/ __ \ 
- /        \  \___|   Y  \  ___/|  Y Y  \/ __ \_ /_____/  /        \|   Y  \  |  /|  |  |  | |  |_\  ___/ 
-/_______  /\___  >___|  /\___  >__|_|  (____  /         /_______  /|___|  /____/ |__|  |__| |____/\___  >
-        \/     \/     \/     \/      \/     \/                  \/      \/                            \/ 
+#!Function for print colored messages
+print_color() {
+    color=$1
+    message=$2
+    echo "${color}${message}${RESET}"
+}
+
+
+
+cat <<EOF
+ ____       _                          
+/ ___|  ___| |__   ___ _ __ ___   __ _ 
+\___ \ / __| '_ \ / _ \ '_ (_ \ /  _) |
+ ___) | (__| | | |  __/ | | | | | (_| |
+|____/ \___|_| |_|\___|_| |_| |_|\__,_|
+/ ___|| |__  _   _| |_| |_| | ___      
+\___ \| '_ \| | | | __| __| |/ _ \     
+ ___) | | | | |_| | |_| |_| |  __/     
+|____/|_| |_|\__,_|\__|\__|_|\___|     
 
 EOF
 sleep 3
@@ -19,7 +37,7 @@ get_user_input() {
     local default_value="$3"
 
     read -p "$prompt [$default_value]: " user_input
-   
+
     eval "$variable_name=\"${user_input:-$default_value}\""
 }
 #!check directory
@@ -90,13 +108,14 @@ get_user_input "Enter DB name" DB_NAME "mysql"
 get_user_input "Enter DB port" DB_PORT "3306"
 get_user_input "Enter myloader user" MYLOADER_USER "ubuntu"
 
-
 #!Print source credentials
 print_credentials "$DB_HOST" "$DB_USER" "$DB_NAME" "$DB_PORT"
 
 #!Backup directory details
-BACKUP_DIR="./Backup/Dumper_${DB_NAME}_$(date +%Y%m%d_%H%M%S)"
-LOG_FILE="./Backup/DumperLogs/mydumper_$(date +%Y%m%d_%H%M%S).log"
+
+timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+BACKUP_DIR="./Backup/Dumper_${DB_NAME}_$timestamp"
+LOG_FILE="./Backup/DumperLogs/mydumper_$timestamp.log"
 
 echo -e "\nBackup will be stored in: $BACKUP_DIR"
 
@@ -137,4 +156,62 @@ echo "Directory permissions:"
 ls -ld "$BACKUP_DIR"
 echo -e "Backup completed successfully. Backup files are located in $BACKUP_DIR."
 echo
+echo
 
+#!Prompt user to continue or exit
+read -p "Do you want to continue with the restore process? (y/n): " continue_restore
+if [[ $continue_restore != "y" && $continue_restore != "Y" ]]; then
+    echo "Exiting script. Goodbye!"
+    exit 0
+fi
+
+#!Prompt user for destination DB credentials
+echo -e "\n=== Destination Database Details ==="
+get_user_input "Enter destination DB host" DEST_DB_HOST "localhost"
+get_user_input "Enter destination DB user" DEST_DB_USER "root"
+get_user_input "Enter destination DB password" DEST_DB_PASSWORD ""
+get_user_input "Enter destination DB name" DEST_DB_NAME "mysql"
+get_user_input "Enter destination DB port" DEST_DB_PORT "3306"
+
+#!Print destination credentials
+print_credentials "$DEST_DB_HOST" "$DEST_DB_USER" "$DEST_DB_NAME" "$DEST_DB_PORT"
+
+#!myloader log file
+RESTORE_LOG_FILE="./Backup/LoaderLogs/myloader_$timestamp.log"
+
+#!myloader
+echo -e "\nStarting restore process..."
+echo
+sudo time myloader \
+    --host="$DEST_DB_HOST" \
+    --user="$DEST_DB_USER" \
+    --password="$DEST_DB_PASSWORD" \
+    --port="$DEST_DB_PORT" \
+    --database="$DEST_DB_NAME" \
+    --directory="$BACKUP_DIR" \
+    --threads=16 \
+    --verbose=3 \
+    --skip-definer \
+    --ignore-errors -v \
+    2>&1 | tee -a "$RESTORE_LOG_FILE"
+
+if [ $? -eq 0 ]; then
+    echo -e ${GREEN}"DB Restored Successfully!!\n" 
+    echo -e "Backups restored from : ${BLUE}$BACKUP_DIR${RESET}\n"
+    echo "Restored DB name: ${YELLOW}$DEST_DB_NAME${RESET}"
+    echo
+    exit 1
+else
+    echo -e ${RED}"DB Restore Failed!!\n"
+    echo "Please check the log file :${YELLOW}$RESTORE_LOG_FILE${RESET}"
+    exit 1
+fi
+
+echo
+echo -e "\nChecking the size of the restored database...\n"
+mysql -h "$DEST_DB_HOST" -u "$DEST_DB_USER" -p"$DEST_DB_PASSWORD" -P "$DEST_DB_PORT" -e "SELECT table_schema AS 'Database',ROUND(SUM(data_length + index_length) / 1024 / 1024 / 1024, 2) AS 'Size_GB' FROM information_schema.tables WHERE table_schema = '$DEST_DB_NAME' GROUP BY table_schema;" | tee -a "$LOG_FILE"
+echo
+echo
+
+echo -e "\nGoodbye! さようなら! अलविदा! !مع السلامة"
+exit 0
